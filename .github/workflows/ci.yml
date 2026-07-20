@@ -1,0 +1,169 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install ruff
+      - run: ruff check .
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Run tests
+        run: PYTHONPATH=. pytest tests/ -v --tb=short
+
+  build:
+    name: Build package
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install build twine
+      - name: Build wheel and sdist
+        run: python -m build
+      - name: Check package metadata
+        run: twine check dist/*
+      - name: Install built wheel in a clean venv
+        run: |
+          python -m venv /tmp/smoke-venv
+          /tmp/smoke-venv/bin/pip install "$(echo dist/*.whl)"
+          /tmp/smoke-venv/bin/camara-audit --version
+          /tmp/smoke-venv/bin/camara-audit --help
+
+      - name: "Integration test: real commands against a real mock CAMARA gateway"
+        run: |
+          set -uo pipefail
+          trap 'echo "::error::Integration test failed at line $LINENO: $BASH_COMMAND"' ERR
+          set -e
+          CA=/tmp/smoke-venv/bin/camara-audit
+          WORK=$(mktemp -d)
+          cd "$WORK"
+
+          echo "::group::Start a real mock CAMARA gateway (real HTTP+TLS sockets)"
+          PYTHONPATH="$GITHUB_WORKSPACE" python3 -c "
+          import sys, time
+          sys.path.insert(0, '$GITHUB_WORKSPACE')
+          from tests.fixtures.mock_gateway.server import start_mock_gateway
+          server = start_mock_gateway(accept_query_string_credentials=True)
+          with open('/tmp/mock_http_port.txt', 'w') as f:
+              f.write(str(server.http_port))
+          with open('/tmp/mock_tls_port.txt', 'w') as f:
+              f.write(str(server.tls_port))
+          time.sleep(180)
+          " > /tmp/mock_gateway.log 2>&1 &
+          MOCK_PID=$!
+          for i in $(seq 1 20); do
+            if [ -f /tmp/mock_http_port.txt ] && [ -f /tmp/mock_tls_port.txt ]; then
+              break
+            fi
+            sleep 0.5
+          done
+          if [ ! -f /tmp/mock_http_port.txt ]; then
+            echo "::error::Mock gateway never wrote its port file. Log:"
+            cat /tmp/mock_gateway.log || true
+            exit 1
+          fi
+          HTTP_PORT=$(cat /tmp/mock_http_port.txt)
+          TLS_PORT=$(cat /tmp/mock_tls_port.txt)
+          echo "Mock gateway — HTTP: $HTTP_PORT, TLS: $TLS_PORT (pid $MOCK_PID)"
+          echo "::endgroup::"
+
+          echo "::group::init, validate-scope"
+          $CA init --output authorization.yml
+          /tmp/smoke-venv/bin/python3 -c "
+          import datetime, yaml
+          now = datetime.datetime.now(datetime.timezone.utc)
+          data = {
+              'engagement_id': 'ci-integration-test',
+              'authorized_by': 'CI', 'authorized_contact_email': 'ci@example.com',
+              'client': 'CI Integration Test',
+              'scope': {'targets': ['127.0.0.1'], 'excluded_targets': [], 'allowed_categories': ['recon']},
+              'window': {
+                  'start': (now - datetime.timedelta(hours=1)).isoformat(),
+                  'end': (now + datetime.timedelta(days=1)).isoformat(),
+              },
+              'confirmation_phrase': 'I confirm authorization for ci-integration-test',
+          }
+          with open('authorization.yml', 'w') as f:
+              yaml.safe_dump(data, f)
+          "
+          $CA validate-scope
+          echo "::endgroup::"
+
+          echo "::group::scan — plain HTTP target (real CRITICAL detection)"
+          $CA scan "http://127.0.0.1:$HTTP_PORT/token" --json /tmp/scan1.json || true
+          cat /tmp/scan1.json
+          python3 -c "
+          import json
+          findings = json.load(open('/tmp/scan1.json'))
+          assert any('not HTTPS' in f['title'] for f in findings), f'expected not-HTTPS finding not found: {findings}'
+          print('OK: not-HTTPS finding present')
+          "
+          echo "::endgroup::"
+
+          echo "::group::scan — vulnerable HTTPS gateway, --insecure (real MEDIUM detection)"
+          # Uses --json rather than grepping the terminal table:
+          # confirmed Rich word-wraps long finding titles across
+          # multiple lines depending on terminal width, which differs
+          # between an interactive session and CI's piped/non-TTY
+          # output -- "query string" ended up split across two
+          # separate lines in real CI output, making a simple grep for
+          # the adjacent substring fail even though the finding itself
+          # was genuinely present and correct. Confirmed this was the
+          # real cause (not a functional bug) by reproducing the exact
+          # split locally with --json alongside the normal table
+          # output, seeing the same two words on separate lines in the
+          # table but intact together in the JSON.
+          $CA scan "https://127.0.0.1:$TLS_PORT/token" --insecure --json /tmp/scan2.json || true
+          cat /tmp/scan2.json
+          python3 -c "
+          import json
+          findings = json.load(open('/tmp/scan2.json'))
+          assert any('query string' in f['title'] for f in findings), f'expected query-string finding not found: {findings}'
+          print('OK: query-string finding present')
+          "
+          echo "::endgroup::"
+
+          echo "::group::analyze-token — real PII detection"
+          TOKEN=$(python3 -c "
+          import base64, json
+          def b64url(d): return base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b'=').decode()
+          print(b64url({'alg':'RS256','typ':'JWT'}) + '.' + b64url({'sub': '+351912345678'}) + '.sig')
+          ")
+          $CA analyze-token "$TOKEN" --json /tmp/token_findings.json || true
+          cat /tmp/token_findings.json
+          python3 -c "
+          import json
+          findings = json.load(open('/tmp/token_findings.json'))
+          assert any(f['severity'] == 'CRITICAL' for f in findings), f'expected CRITICAL PII finding not found: {findings}'
+          print('OK: CRITICAL PII finding present')
+          "
+          echo "::endgroup::"
+
+          kill $MOCK_PID 2>/dev/null || true
+          echo "All integration checks passed."
