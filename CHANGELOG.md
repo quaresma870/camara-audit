@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features and usage.
 
+### v0.3.0
+- feat: **`sim_swap_rate_limit`** (recon tier) — checks a CAMARA SIM Swap `check` endpoint for
+  whether it imposes any per-phone-number request throttling; an endpoint that answers an
+  unlimited number of repeated queries for the same number can be polled to detect the exact
+  moment a target's SIM changes, turning a fraud-prevention API into a surveillance oracle. New
+  `scan-sim-swap` CLI command.
+- test: new mock SIM Swap gateway fixture (real HTTP), covering both a throttled (secure) and an
+  unthrottled (vulnerable) configuration; CI's integration test now also runs `scan-sim-swap`
+  against it.
+
 ### v0.2.0
 - feat: **`number_verification_enumeration`** (recon tier) — checks a CAMARA Number Verification
   `verify` endpoint for whether its error response echoes back the queried phone number on a

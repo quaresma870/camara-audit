@@ -18,6 +18,7 @@ from tests.fixtures.mock_gateway.number_verification_server import (
     start_mock_number_verification_gateway,
 )
 from tests.fixtures.mock_gateway.server import start_mock_gateway
+from tests.fixtures.mock_gateway.sim_swap_server import start_mock_sim_swap_gateway
 
 
 def _b64url(d: dict) -> str:
@@ -368,6 +369,77 @@ class TestNumberVerificationEnumerationPlugin:
         eng = self._engagement(tmp_path)
         result = NumberVerificationEnumerationModule(eng, timeout=5.0).run(
             "https://10.0.0.99/number-verification/v0/verify"
+        )
+        assert result.error is not None
+        assert "scope" in result.error.lower()
+
+
+class TestSimSwapRateLimitPlugin:
+    """Tested against a real mock SIM Swap `check` endpoint."""
+
+    def _engagement(self, tmp_path) -> Engagement:
+        path = tmp_path / "authorization.yml"
+        _write_auth_yaml(path)
+        return Engagement.load(path, tmp_path / "test.audit.jsonl")
+
+    def test_unthrottled_gateway_flagged_medium(self, tmp_path):
+        from camara_audit.plugins.sim_swap_rate_limit import SimSwapRateLimitModule
+
+        server = start_mock_sim_swap_gateway(rate_limit_after=None)
+        try:
+            eng = self._engagement(tmp_path)
+            plugin = SimSwapRateLimitModule(eng, timeout=5.0)
+            result = plugin.run(
+                f"http://127.0.0.1:{server.http_port}/sim-swap/v1/check", probe_count=5
+            )
+            assert result.error is None
+            assert any(
+                f.severity.value == "MEDIUM" and "No rate limiting observed" in f.title
+                for f in result.findings
+            )
+        finally:
+            server.stop()
+
+    def test_throttled_gateway_produces_only_info(self, tmp_path):
+        from camara_audit.plugins.sim_swap_rate_limit import SimSwapRateLimitModule
+
+        server = start_mock_sim_swap_gateway(rate_limit_after=3)
+        try:
+            eng = self._engagement(tmp_path)
+            plugin = SimSwapRateLimitModule(eng, timeout=5.0)
+            result = plugin.run(
+                f"http://127.0.0.1:{server.http_port}/sim-swap/v1/check", probe_count=20
+            )
+            assert result.error is None
+            assert not any(f.severity.value in ("CRITICAL", "HIGH", "MEDIUM") for f in result.findings)
+            assert any("rate-limits repeated queries" in f.title for f in result.findings)
+        finally:
+            server.stop()
+
+    def test_throttled_gateway_stops_probing_once_429_seen(self, tmp_path):
+        """The plugin must stop sending requests as soon as it sees a 429
+        rather than hammering an already-throttling endpoint for the
+        full probe_count."""
+        from camara_audit.plugins.sim_swap_rate_limit import SimSwapRateLimitModule
+
+        server = start_mock_sim_swap_gateway(rate_limit_after=3)
+        try:
+            eng = self._engagement(tmp_path)
+            plugin = SimSwapRateLimitModule(eng, timeout=5.0)
+            result = plugin.run(
+                f"http://127.0.0.1:{server.http_port}/sim-swap/v1/check", probe_count=100
+            )
+            assert result.error is None
+            assert "4 request(s)" in result.findings[0].description
+        finally:
+            server.stop()
+
+    def test_out_of_scope_target_produces_module_error_not_crash(self, tmp_path):
+        from camara_audit.plugins.sim_swap_rate_limit import SimSwapRateLimitModule
+
+        eng = self._engagement(tmp_path)
+        result = SimSwapRateLimitModule(eng, timeout=5.0).run(
+            "https://10.0.0.99/sim-swap/v1/check", probe_count=5
         )
         assert result.error is not None
         assert "scope" in result.error.lower()

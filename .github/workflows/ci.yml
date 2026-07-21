@@ -188,6 +188,45 @@ jobs:
 
           kill $MOCK_NV_PID 2>/dev/null || true
 
+          echo "::group::Start a real mock SIM Swap gateway (never rate-limits)"
+          PYTHONPATH="$GITHUB_WORKSPACE" python3 -c "
+          import sys, time
+          sys.path.insert(0, '$GITHUB_WORKSPACE')
+          from tests.fixtures.mock_gateway.sim_swap_server import start_mock_sim_swap_gateway
+          server = start_mock_sim_swap_gateway(rate_limit_after=None)
+          with open('/tmp/mock_sim_swap_port.txt', 'w') as f:
+              f.write(str(server.http_port))
+          time.sleep(180)
+          " > /tmp/mock_sim_swap_gateway.log 2>&1 &
+          MOCK_SS_PID=$!
+          for i in $(seq 1 20); do
+            if [ -f /tmp/mock_sim_swap_port.txt ]; then
+              break
+            fi
+            sleep 0.5
+          done
+          if [ ! -f /tmp/mock_sim_swap_port.txt ]; then
+            echo "::error::Mock SIM Swap gateway never wrote its port file. Log:"
+            cat /tmp/mock_sim_swap_gateway.log || true
+            exit 1
+          fi
+          SS_PORT=$(cat /tmp/mock_sim_swap_port.txt)
+          echo "Mock SIM Swap gateway — HTTP: $SS_PORT (pid $MOCK_SS_PID)"
+          echo "::endgroup::"
+
+          echo "::group::scan-sim-swap — real missing-rate-limit detection"
+          $CA scan-sim-swap "http://127.0.0.1:$SS_PORT/sim-swap/v1/check" --probe-count 5 --json /tmp/scan4.json || true
+          cat /tmp/scan4.json
+          python3 -c "
+          import json
+          findings = json.load(open('/tmp/scan4.json'))
+          assert any('No rate limiting observed' in f['title'] for f in findings), f'expected missing-rate-limit finding not found: {findings}'
+          print('OK: missing-rate-limit finding present')
+          "
+          echo "::endgroup::"
+
+          kill $MOCK_SS_PID 2>/dev/null || true
+
           echo "::group::analyze-token — real PII detection"
           TOKEN=$(python3 -c "
           import base64, json
