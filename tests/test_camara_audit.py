@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+import requests
 
 from camara_audit.core.authorization import AuthorizationError, load_authorization
 from camara_audit.core.engagement import (
@@ -14,6 +15,7 @@ from camara_audit.core.engagement import (
     ScopeViolation,
 )
 from camara_audit.core.jwt_tools import JWTDecodeError, decode_jwt_claims
+from camara_audit.core.models import Finding, FindingCategory, ModuleResult, Severity
 from tests.fixtures.mock_gateway.device_location_server import (
     start_mock_device_location_gateway,
 )
@@ -505,3 +507,153 @@ class TestDeviceLocationAccuracyFloorPlugin:
         )
         assert result.error is not None
         assert "scope" in result.error.lower()
+
+
+def _make_result(findings: list[Finding], error: str | None = None) -> ModuleResult:
+    return ModuleResult(module="token_endpoint_security", findings=findings, error=error, duration_ms=12.5)
+
+
+def _make_finding(severity: Severity = Severity.MEDIUM, title: str = "Something found") -> Finding:
+    return Finding(
+        module="token_endpoint_security", title=title, severity=severity,
+        category=FindingCategory.RECON, target="https://example.com/token",
+        description="desc", evidence="evidence", remediation="fix it",
+    )
+
+
+class TestStorage:
+    def test_open_db_creates_schema(self, tmp_path):
+        from camara_audit.core.storage import open_db
+
+        conn = open_db(tmp_path / "results.db")
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert {"scans", "findings"} <= tables
+        conn.close()
+
+    def test_record_result_persists_scan_and_findings(self, tmp_path):
+        from camara_audit.core.storage import list_findings, list_scans, open_db, record_result
+
+        conn = open_db(tmp_path / "results.db")
+        result = _make_result([_make_finding(Severity.CRITICAL, "Bad thing")])
+        scan_id = record_result(conn, "eng-1", "https://example.com/token", result)
+
+        scans = list_scans(conn)
+        assert len(scans) == 1
+        assert scans[0]["id"] == scan_id
+        assert scans[0]["engagement_id"] == "eng-1"
+        assert scans[0]["module"] == "token_endpoint_security"
+
+        findings = list_findings(conn)
+        assert len(findings) == 1
+        assert findings[0]["title"] == "Bad thing"
+        assert findings[0]["severity"] == "CRITICAL"
+        conn.close()
+
+    def test_record_result_with_no_findings_still_persists_scan(self, tmp_path):
+        from camara_audit.core.storage import list_findings, list_scans, open_db, record_result
+
+        conn = open_db(tmp_path / "results.db")
+        record_result(conn, "eng-1", "https://example.com/token", _make_result([]))
+        assert len(list_scans(conn)) == 1
+        assert len(list_findings(conn)) == 0
+        conn.close()
+
+    def test_list_findings_filters_by_severity_and_module(self, tmp_path):
+        from camara_audit.core.storage import list_findings, open_db, record_result
+
+        conn = open_db(tmp_path / "results.db")
+        record_result(conn, "eng-1", "t1", _make_result([_make_finding(Severity.CRITICAL, "A")]))
+        record_result(conn, "eng-1", "t2", _make_result([_make_finding(Severity.INFO, "B")]))
+
+        critical_only = list_findings(conn, severity="CRITICAL")
+        assert [f["title"] for f in critical_only] == ["A"]
+
+        wrong_module = list_findings(conn, module="nonexistent_module")
+        assert wrong_module == []
+        conn.close()
+
+    def test_severity_counts_tallies_across_scans(self, tmp_path):
+        from camara_audit.core.storage import open_db, record_result, severity_counts
+
+        conn = open_db(tmp_path / "results.db")
+        record_result(conn, "eng-1", "t1", _make_result([
+            _make_finding(Severity.CRITICAL, "A"), _make_finding(Severity.CRITICAL, "B"),
+        ]))
+        record_result(conn, "eng-1", "t2", _make_result([_make_finding(Severity.INFO, "C")]))
+
+        counts = severity_counts(conn)
+        assert counts["CRITICAL"] == 2
+        assert counts["INFO"] == 1
+        conn.close()
+
+
+class TestDashboard:
+    """Tested against a real HTTP server (the dashboard itself), matching
+    this portfolio's established real-protocol testing pattern."""
+
+    def _db_with_findings(self, tmp_path):
+        from camara_audit.core.storage import open_db, record_result
+
+        conn = open_db(tmp_path / "results.db")
+        record_result(conn, "eng-1", "https://example.com/token", _make_result([
+            _make_finding(Severity.CRITICAL, "Plain HTTP detected"),
+        ]))
+        record_result(conn, "eng-1", "https://example.com/other", _make_result([
+            _make_finding(Severity.INFO, "All clear here"),
+        ]))
+        conn.close()
+        return tmp_path / "results.db"
+
+    def test_dashboard_serves_findings_over_real_http(self, tmp_path):
+        from camara_audit.reports.dashboard import DashboardServer
+
+        db_path = self._db_with_findings(tmp_path)
+        server = DashboardServer(db_path, port=0)
+        server.start()
+        try:
+            resp = requests.get(f"http://127.0.0.1:{server.port}/", timeout=5)
+            assert resp.status_code == 200
+            assert "Plain HTTP detected" in resp.text
+            assert "All clear here" in resp.text
+        finally:
+            server.stop()
+
+    def test_dashboard_severity_filter_excludes_other_severities(self, tmp_path):
+        from camara_audit.reports.dashboard import DashboardServer
+
+        db_path = self._db_with_findings(tmp_path)
+        server = DashboardServer(db_path, port=0)
+        server.start()
+        try:
+            resp = requests.get(f"http://127.0.0.1:{server.port}/?severity=CRITICAL", timeout=5)
+            assert resp.status_code == 200
+            assert "Plain HTTP detected" in resp.text
+            assert "All clear here" not in resp.text
+        finally:
+            server.stop()
+
+    def test_dashboard_unknown_path_returns_404(self, tmp_path):
+        from camara_audit.reports.dashboard import DashboardServer
+
+        db_path = self._db_with_findings(tmp_path)
+        server = DashboardServer(db_path, port=0)
+        server.start()
+        try:
+            resp = requests.get(f"http://127.0.0.1:{server.port}/nope", timeout=5)
+            assert resp.status_code == 404
+        finally:
+            server.stop()
+
+    def test_dashboard_over_empty_db_shows_no_findings_message(self, tmp_path):
+        from camara_audit.core.storage import open_db
+        from camara_audit.reports.dashboard import DashboardServer
+
+        open_db(tmp_path / "empty.db").close()
+        server = DashboardServer(tmp_path / "empty.db", port=0)
+        server.start()
+        try:
+            resp = requests.get(f"http://127.0.0.1:{server.port}/", timeout=5)
+            assert resp.status_code == 200
+            assert "No findings match this filter." in resp.text
+        finally:
+            server.stop()

@@ -61,6 +61,16 @@ This closes out v0.1's "more CAMARA APIs" goal: Number Verification,
 SIM Swap, and Device Location — the three most widely deployed CAMARA
 APIs today — each now have at least one live check.
 
+### v0.5.0
+- Persistence + dashboard — every `scan*`/`analyze-token` command now
+  takes a `--db path.db` flag that persists findings to a local SQLite
+  file, and `camara-audit dashboard --db path.db` serves a read-only
+  local web dashboard over it (severity/module filters). No new
+  dependency: built entirely on the standard library's
+  `sqlite3`/`http.server`, matching this project's minimal-dependency
+  approach. The dashboard is tested against a real HTTP server (its
+  own), not mocked.
+
 ## Next
 
 ### Scope enforcement testing
@@ -72,11 +82,6 @@ real token with a deliberately-wrong scope to test with, which is a
 bigger practical hurdle than the token-endpoint-only checks shipped so
 far (real sandbox credentials from an actual CAMARA-supporting operator
 are needed to obtain one).
-
-### Persistence + dashboard
-A `--db` flag to persist scan results and a read-only web dashboard,
-matching the pattern already used in the sibling secureaudit/
-redteam-toolkit/voipaudit repos.
 
 ### JWT signature verification (optional, opt-in)
 `analyze-token` deliberately never verifies a token's signature today
