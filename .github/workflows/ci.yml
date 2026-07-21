@@ -254,7 +254,7 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::scan-device-location — real accuracy-floor-enforced detection"
-          $CA scan-device-location "http://127.0.0.1:$DL_PORT/location-verification/v1/verify" --json /tmp/scan5.json || true
+          $CA scan-device-location "http://127.0.0.1:$DL_PORT/location-verification/v1/verify" --json /tmp/scan5.json --db /tmp/results.db || true
           cat /tmp/scan5.json
           python3 -c "
           import json
@@ -265,6 +265,23 @@ jobs:
           echo "::endgroup::"
 
           kill $MOCK_DL_PID 2>/dev/null || true
+
+          echo "::group::dashboard — real read-only web dashboard over persisted --db results"
+          test -f /tmp/results.db
+          $CA dashboard --db /tmp/results.db --port 8765 > /tmp/dashboard.log 2>&1 &
+          DASHBOARD_PID=$!
+          for i in $(seq 1 20); do
+            if curl -sf "http://127.0.0.1:8765/" > /tmp/dashboard_page.html; then
+              break
+            fi
+            sleep 0.5
+          done
+          cat /tmp/dashboard.log
+          grep -q "validate area radius independently" /tmp/dashboard_page.html \
+            && echo "OK: dashboard rendered the persisted finding" \
+            || (echo "::error::dashboard page did not contain the expected finding" && cat /tmp/dashboard_page.html && exit 1)
+          kill $DASHBOARD_PID 2>/dev/null || true
+          echo "::endgroup::"
 
           echo "::group::analyze-token — real PII detection"
           TOKEN=$(python3 -c "

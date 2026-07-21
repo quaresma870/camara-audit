@@ -99,6 +99,30 @@ def list_plugins():
 
 
 @cli.command()
+@click.option("--db", "db_path", required=True, type=click.Path(exists=True, dir_okay=False),
+              help="Path to a SQLite database previously populated via --db on a scan/"
+                   "analyze-token command.")
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", default=8765, show_default=True, type=int)
+def dashboard(db_path, host, port):
+    """Serve a read-only local web dashboard over a --db SQLite file.
+
+    Read-only: every route only ever runs SELECT queries against the
+    database — nothing served by this command writes to it.
+    """
+    from camara_audit.reports.dashboard import serve_dashboard
+
+    console.print(
+        f"[green]✔[/green] Serving dashboard at [bold]http://{host}:{port}/[/bold] "
+        "(read-only, Ctrl+C to stop)"
+    )
+    try:
+        serve_dashboard(db_path, host=host, port=port)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Stopped.[/yellow]")
+
+
+@cli.command()
 @click.argument("targets", nargs=-1, required=True)
 @click.option("--authorization", "-a", default="authorization.yml", show_default=True)
 @click.option("--audit-log", default=None)
@@ -109,10 +133,14 @@ def list_plugins():
 @click.option("--json", "json_output", default=None, type=click.Path(),
               help="Also write findings as JSON to this path — a more robust way to check "
                    "results programmatically than parsing the terminal table's word-wrapped text.")
-def scan(targets, authorization, audit_log, timeout, insecure, json_output):
+@click.option("--db", "db_path", default=None, type=click.Path(),
+              help="Persist findings to a SQLite database at this path, for later viewing "
+                   "with `camara-audit dashboard --db <path>`.")
+def scan(targets, authorization, audit_log, timeout, insecure, json_output, db_path):
     """Scan one or more CAMARA/Open Gateway token endpoint URLs."""
     from camara_audit.core.authorization import AuthorizationError, load_authorization
     from camara_audit.core.engagement import Engagement, ScopeViolation
+    from camara_audit.core.storage import open_db, record_result
     from camara_audit.plugins.token_endpoint_security import TokenEndpointSecurityModule
     from camara_audit.reports.terminal import print_results
 
@@ -124,6 +152,7 @@ def scan(targets, authorization, audit_log, timeout, insecure, json_output):
 
     log_path = audit_log or f"{auth.engagement_id}.audit.jsonl"
     eng = Engagement(auth, log_path)
+    db_conn = open_db(db_path) if db_path else None
 
     all_findings = []
     exit_code = 0
@@ -139,12 +168,18 @@ def scan(targets, authorization, audit_log, timeout, insecure, json_output):
             exit_code = 1
         all_findings.extend(result.findings)
         print_results(target, [result])
+        if db_conn:
+            record_result(db_conn, auth.engagement_id, target, result)
 
     if json_output:
         import json as json_module
         with open(json_output, "w") as f:
             json_module.dump([f.to_dict() for f in all_findings], f, indent=2)
         console.print(f"[green]✔[/green] Wrote {len(all_findings)} finding(s) to {json_output}")
+
+    if db_conn:
+        db_conn.close()
+        console.print(f"[green]✔[/green] Persisted results to {db_path}")
 
     sys.exit(exit_code)
 
@@ -161,11 +196,17 @@ def scan(targets, authorization, audit_log, timeout, insecure, json_output):
               help="Syntactically valid but non-real phone number used to probe the endpoint.")
 @click.option("--json", "json_output", default=None, type=click.Path(),
               help="Also write findings as JSON to this path.")
-def scan_number_verification(targets, authorization, audit_log, timeout, insecure, phone_number, json_output):
+@click.option("--db", "db_path", default=None, type=click.Path(),
+              help="Persist findings to a SQLite database at this path, for later viewing "
+                   "with `camara-audit dashboard --db <path>`.")
+def scan_number_verification(
+    targets, authorization, audit_log, timeout, insecure, phone_number, json_output, db_path,
+):
     """Scan one or more CAMARA Number Verification `verify` endpoint URLs for
     phone-number-echo enumeration in error responses."""
     from camara_audit.core.authorization import AuthorizationError, load_authorization
     from camara_audit.core.engagement import Engagement, ScopeViolation
+    from camara_audit.core.storage import open_db, record_result
     from camara_audit.plugins.number_verification_enumeration import (
         NumberVerificationEnumerationModule,
     )
@@ -179,6 +220,7 @@ def scan_number_verification(targets, authorization, audit_log, timeout, insecur
 
     log_path = audit_log or f"{auth.engagement_id}.audit.jsonl"
     eng = Engagement(auth, log_path)
+    db_conn = open_db(db_path) if db_path else None
 
     all_findings = []
     exit_code = 0
@@ -194,12 +236,18 @@ def scan_number_verification(targets, authorization, audit_log, timeout, insecur
             exit_code = 1
         all_findings.extend(result.findings)
         print_results(target, [result])
+        if db_conn:
+            record_result(db_conn, auth.engagement_id, target, result)
 
     if json_output:
         import json as json_module
         with open(json_output, "w") as f:
             json_module.dump([f.to_dict() for f in all_findings], f, indent=2)
         console.print(f"[green]✔[/green] Wrote {len(all_findings)} finding(s) to {json_output}")
+
+    if db_conn:
+        db_conn.close()
+        console.print(f"[green]✔[/green] Persisted results to {db_path}")
 
     sys.exit(exit_code)
 
@@ -218,11 +266,17 @@ def scan_number_verification(targets, authorization, audit_log, timeout, insecur
               help="Number of consecutive requests to send for the same phone number.")
 @click.option("--json", "json_output", default=None, type=click.Path(),
               help="Also write findings as JSON to this path.")
-def scan_sim_swap(targets, authorization, audit_log, timeout, insecure, phone_number, probe_count, json_output):
+@click.option("--db", "db_path", default=None, type=click.Path(),
+              help="Persist findings to a SQLite database at this path, for later viewing "
+                   "with `camara-audit dashboard --db <path>`.")
+def scan_sim_swap(
+    targets, authorization, audit_log, timeout, insecure, phone_number, probe_count, json_output, db_path,
+):
     """Scan one or more CAMARA SIM Swap `check` endpoint URLs for missing
     per-phone-number rate limiting (a surveillance-oracle risk)."""
     from camara_audit.core.authorization import AuthorizationError, load_authorization
     from camara_audit.core.engagement import Engagement, ScopeViolation
+    from camara_audit.core.storage import open_db, record_result
     from camara_audit.plugins.sim_swap_rate_limit import SimSwapRateLimitModule
     from camara_audit.reports.terminal import print_results
 
@@ -234,6 +288,7 @@ def scan_sim_swap(targets, authorization, audit_log, timeout, insecure, phone_nu
 
     log_path = audit_log or f"{auth.engagement_id}.audit.jsonl"
     eng = Engagement(auth, log_path)
+    db_conn = open_db(db_path) if db_path else None
 
     all_findings = []
     exit_code = 0
@@ -249,12 +304,18 @@ def scan_sim_swap(targets, authorization, audit_log, timeout, insecure, phone_nu
             exit_code = 1
         all_findings.extend(result.findings)
         print_results(target, [result])
+        if db_conn:
+            record_result(db_conn, auth.engagement_id, target, result)
 
     if json_output:
         import json as json_module
         with open(json_output, "w") as f:
             json_module.dump([f.to_dict() for f in all_findings], f, indent=2)
         console.print(f"[green]✔[/green] Wrote {len(all_findings)} finding(s) to {json_output}")
+
+    if db_conn:
+        db_conn.close()
+        console.print(f"[green]✔[/green] Persisted results to {db_path}")
 
     sys.exit(exit_code)
 
@@ -271,11 +332,17 @@ def scan_sim_swap(targets, authorization, audit_log, timeout, insecure, phone_nu
               help="Syntactically valid but non-real phone number used to probe the endpoint.")
 @click.option("--json", "json_output", default=None, type=click.Path(),
               help="Also write findings as JSON to this path.")
-def scan_device_location(targets, authorization, audit_log, timeout, insecure, phone_number, json_output):
+@click.option("--db", "db_path", default=None, type=click.Path(),
+              help="Persist findings to a SQLite database at this path, for later viewing "
+                   "with `camara-audit dashboard --db <path>`.")
+def scan_device_location(
+    targets, authorization, audit_log, timeout, insecure, phone_number, json_output, db_path,
+):
     """Scan one or more CAMARA Device Location Verification `verify` endpoint
     URLs for missing area-radius/accuracy-floor enforcement."""
     from camara_audit.core.authorization import AuthorizationError, load_authorization
     from camara_audit.core.engagement import Engagement, ScopeViolation
+    from camara_audit.core.storage import open_db, record_result
     from camara_audit.plugins.device_location_accuracy_floor import (
         DeviceLocationAccuracyFloorModule,
     )
@@ -289,6 +356,7 @@ def scan_device_location(targets, authorization, audit_log, timeout, insecure, p
 
     log_path = audit_log or f"{auth.engagement_id}.audit.jsonl"
     eng = Engagement(auth, log_path)
+    db_conn = open_db(db_path) if db_path else None
 
     all_findings = []
     exit_code = 0
@@ -304,6 +372,8 @@ def scan_device_location(targets, authorization, audit_log, timeout, insecure, p
             exit_code = 1
         all_findings.extend(result.findings)
         print_results(target, [result])
+        if db_conn:
+            record_result(db_conn, auth.engagement_id, target, result)
 
     if json_output:
         import json as json_module
@@ -311,13 +381,20 @@ def scan_device_location(targets, authorization, audit_log, timeout, insecure, p
             json_module.dump([f.to_dict() for f in all_findings], f, indent=2)
         console.print(f"[green]✔[/green] Wrote {len(all_findings)} finding(s) to {json_output}")
 
+    if db_conn:
+        db_conn.close()
+        console.print(f"[green]✔[/green] Persisted results to {db_path}")
+
     sys.exit(exit_code)
 
 
 @cli.command(name="analyze-token")
 @click.argument("token")
 @click.option("--json", "json_output", default=None, type=click.Path())
-def analyze_token(token, json_output):
+@click.option("--db", "db_path", default=None, type=click.Path(),
+              help="Persist findings to a SQLite database at this path, for later viewing "
+                   "with `camara-audit dashboard --db <path>`.")
+def analyze_token(token, json_output, db_path):
     """Analyze a JWT (access/ID token) for PII leakage in its claims.
 
     File/data analysis only — no live target is touched, so no
@@ -331,14 +408,23 @@ def analyze_token(token, json_output):
     if token.startswith("@"):
         token = Path(token[1:]).read_text(encoding="utf-8").strip()
 
-    findings = analyze_jwt_for_pii(token, source_label="token")
-    print_results("token", [ModuleResult(module="jwt_pii_leakage", findings=findings)])
+    result = ModuleResult(module="jwt_pii_leakage", findings=analyze_jwt_for_pii(token, source_label="token"))
+    findings = result.findings
+    print_results("token", [result])
 
     if json_output:
         import json as json_module
         with open(json_output, "w") as f:
             json_module.dump([f.to_dict() for f in findings], f, indent=2)
         console.print(f"[green]✔[/green] Wrote {len(findings)} finding(s) to {json_output}")
+
+    if db_path:
+        from camara_audit.core.storage import open_db, record_result
+
+        db_conn = open_db(db_path)
+        record_result(db_conn, "offline-analysis", "token", result)
+        db_conn.close()
+        console.print(f"[green]✔[/green] Persisted results to {db_path}")
 
     if any(f.severity.value == "CRITICAL" for f in findings):
         sys.exit(1)

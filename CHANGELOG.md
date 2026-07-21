@@ -3,6 +3,18 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features and usage.
 
+### v0.5.0
+- feat: **persistence + dashboard** — every `scan*`/`analyze-token` command now takes a
+  `--db path.db` flag that persists findings to a local SQLite database (`camara_audit/core/
+  storage.py`), and a new `camara-audit dashboard --db path.db` command serves a read-only local
+  web dashboard over it, filterable by severity and module. No new dependency: built entirely on
+  the standard library's `sqlite3` and `http.server`, keeping this project's minimal-dependency
+  approach intact.
+- test: the dashboard is tested against a real HTTP server (itself, started on an ephemeral port),
+  not mocked — matching this project's "test against a real protocol implementation" pattern. CI's
+  integration test now also persists a scan's results and curls the dashboard to confirm it
+  renders them.
+
 ### v0.4.0
 - feat: **`device_location_accuracy_floor`** (recon tier) — checks a CAMARA Device Location
   Verification `verify` endpoint for signs it enforces a minimum area radius (an accuracy floor)

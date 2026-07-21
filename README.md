@@ -58,6 +58,11 @@ Early, actively developed. Covers:
   identifier nor contain PII — this checks a real token against that
   documented spec requirement (and a few adjacent claims for the same
   class of leak). File/data analysis only, no live target touched.
+- **Persistence + dashboard** — every `scan*`/`analyze-token` command
+  takes a `--db path.db` flag that persists findings to a local SQLite
+  file, and `camara-audit dashboard --db path.db` serves a read-only
+  local web dashboard over it (filterable by severity/module) — no new
+  dependency, built on the standard library's `sqlite3`/`http.server`.
 
 All live-scan plugins are tested against a real mock OAuth2/CAMARA-style
 gateway over real HTTP (and, for the token endpoint, TLS) sockets — not
@@ -96,7 +101,11 @@ camara-audit scan-sim-swap https://api.operator.com/sim-swap/v1/check
 # 6. Scan a Device Location endpoint for accuracy-floor enforcement
 camara-audit scan-device-location https://api.operator.com/location-verification/v1/verify
 
-# 7. Analyze a token you already have for PII leakage (no authorization.yml needed)
+# 7. Persist results and browse them in a read-only local dashboard
+camara-audit scan https://api.operator.com/oauth2/token --db results.db
+camara-audit dashboard --db results.db   # http://127.0.0.1:8765/
+
+# 8. Analyze a token you already have for PII leakage (no authorization.yml needed)
 camara-audit analyze-token "eyJhbGc..."
 camara-audit analyze-token "@/path/to/token.txt"
 ```
@@ -113,13 +122,14 @@ voipaudit/redteam-toolkit/secureaudit repos.
 ```
 camara-audit/
 ├── camara_audit/
-│   ├── cli.py                      # init, validate-scope, scan, analyze-token, list-plugins
+│   ├── cli.py                      # init, validate-scope, scan*, analyze-token, dashboard, list-plugins
 │   ├── core/
 │   │   ├── authorization.py        # Authorization/Scope/Window — HTTP/URL target matching
 │   │   ├── engagement.py           # Engagement — ties Authorization + audit log together
 │   │   ├── audit_log.py            # hash-chained, append-only audit log
 │   │   ├── rate_limit.py           # rate budget defaults
 │   │   ├── jwt_tools.py            # unverified JWT claims decoding
+│   │   ├── storage.py              # SQLite persistence for --db
 │   │   └── models.py               # Finding, Severity, ModuleResult
 │   ├── plugins/
 │   │   ├── base.py
@@ -127,8 +137,11 @@ camara-audit/
 │   │   ├── number_verification_enumeration.py
 │   │   ├── sim_swap_rate_limit.py
 │   │   └── device_location_accuracy_floor.py
-│   └── analyzers/
-│       └── jwt_pii.py              # offline JWT PII leakage analysis, no Engagement gate
+│   ├── analyzers/
+│   │   └── jwt_pii.py              # offline JWT PII leakage analysis, no Engagement gate
+│   └── reports/
+│       ├── terminal.py             # Rich terminal output
+│       └── dashboard.py            # read-only web dashboard over a --db SQLite file
 ├── tests/
 │   ├── fixtures/mock_gateway/
 │   │   ├── server.py                       # a real HTTP+TLS OAuth2 token gateway, for tests only
