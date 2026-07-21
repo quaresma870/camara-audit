@@ -43,6 +43,15 @@ Early, actively developed. Covers:
   throttling; an endpoint with no such limit can be polled repeatedly
   to detect the exact moment a target's SIM changes, turning an
   anti-fraud API into a surveillance oracle.
+- **`device_location_accuracy_floor`** (recon tier, live scan) — checks
+  whether a CAMARA Device Location Verification `verify` endpoint shows
+  any sign of enforcing a minimum area radius independently of
+  authentication. The spec's own `Circle` schema only requires
+  `radius >= 1` meter, with a note that implementations "may enforce a
+  larger minimum radius (e.g. 1000 meters)" for privacy/regulatory
+  reasons — this checks for that floor at the input-validation layer,
+  and is honest about what it can't confirm without a real
+  authenticated request.
 - **`analyze-token`** — offline JWT claims analysis. CAMARA's own
   Security and Interoperability Profile explicitly requires a
   Three-Legged Access Token's `sub` claim to NOT be a globally unique
@@ -84,7 +93,10 @@ camara-audit scan-number-verification https://api.operator.com/number-verificati
 # 5. Scan a SIM Swap endpoint for missing per-phone-number rate limiting
 camara-audit scan-sim-swap https://api.operator.com/sim-swap/v1/check
 
-# 6. Analyze a token you already have for PII leakage (no authorization.yml needed)
+# 6. Scan a Device Location endpoint for accuracy-floor enforcement
+camara-audit scan-device-location https://api.operator.com/location-verification/v1/verify
+
+# 7. Analyze a token you already have for PII leakage (no authorization.yml needed)
 camara-audit analyze-token "eyJhbGc..."
 camara-audit analyze-token "@/path/to/token.txt"
 ```
@@ -113,14 +125,16 @@ camara-audit/
 │   │   ├── base.py
 │   │   ├── token_endpoint_security.py
 │   │   ├── number_verification_enumeration.py
-│   │   └── sim_swap_rate_limit.py
+│   │   ├── sim_swap_rate_limit.py
+│   │   └── device_location_accuracy_floor.py
 │   └── analyzers/
 │       └── jwt_pii.py              # offline JWT PII leakage analysis, no Engagement gate
 ├── tests/
 │   ├── fixtures/mock_gateway/
 │   │   ├── server.py                       # a real HTTP+TLS OAuth2 token gateway, for tests only
 │   │   ├── number_verification_server.py   # a real HTTP Number Verification gateway, for tests only
-│   │   └── sim_swap_server.py              # a real HTTP SIM Swap gateway, for tests only
+│   │   ├── sim_swap_server.py              # a real HTTP SIM Swap gateway, for tests only
+│   │   └── device_location_server.py       # a real HTTP Device Location gateway, for tests only
 │   └── test_camara_audit.py
 └── .github/workflows/ci.yml
 ```

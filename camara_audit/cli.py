@@ -94,6 +94,7 @@ def list_plugins():
     console.print("  token_endpoint_security           [cyan]recon[/cyan]")
     console.print("  number_verification_enumeration   [cyan]recon[/cyan]")
     console.print("  sim_swap_rate_limit               [cyan]recon[/cyan]")
+    console.print("  device_location_accuracy_floor    [cyan]recon[/cyan]")
     console.print()
 
 
@@ -240,6 +241,61 @@ def scan_sim_swap(targets, authorization, audit_log, timeout, insecure, phone_nu
         plugin = SimSwapRateLimitModule(eng, timeout=timeout, tls_verify=not insecure)
         try:
             result = plugin.run(target, phone_number=phone_number, probe_count=probe_count)
+        except ScopeViolation as exc:
+            console.print(f"[red]✘ {exc}[/red]")
+            exit_code = 1
+            continue
+        if any(f.severity.value in ("CRITICAL", "HIGH") for f in result.findings):
+            exit_code = 1
+        all_findings.extend(result.findings)
+        print_results(target, [result])
+
+    if json_output:
+        import json as json_module
+        with open(json_output, "w") as f:
+            json_module.dump([f.to_dict() for f in all_findings], f, indent=2)
+        console.print(f"[green]✔[/green] Wrote {len(all_findings)} finding(s) to {json_output}")
+
+    sys.exit(exit_code)
+
+
+@cli.command(name="scan-device-location")
+@click.argument("targets", nargs=-1, required=True)
+@click.option("--authorization", "-a", default="authorization.yml", show_default=True)
+@click.option("--audit-log", default=None)
+@click.option("--timeout", default=10.0, show_default=True, type=float)
+@click.option("--insecure", is_flag=True,
+              help="Skip TLS certificate verification — needed to reach a self-signed or "
+                   "otherwise unverifiable target at all.")
+@click.option("--phone-number", default="+15550123456", show_default=True,
+              help="Syntactically valid but non-real phone number used to probe the endpoint.")
+@click.option("--json", "json_output", default=None, type=click.Path(),
+              help="Also write findings as JSON to this path.")
+def scan_device_location(targets, authorization, audit_log, timeout, insecure, phone_number, json_output):
+    """Scan one or more CAMARA Device Location Verification `verify` endpoint
+    URLs for missing area-radius/accuracy-floor enforcement."""
+    from camara_audit.core.authorization import AuthorizationError, load_authorization
+    from camara_audit.core.engagement import Engagement, ScopeViolation
+    from camara_audit.plugins.device_location_accuracy_floor import (
+        DeviceLocationAccuracyFloorModule,
+    )
+    from camara_audit.reports.terminal import print_results
+
+    try:
+        auth = load_authorization(authorization)
+    except AuthorizationError as exc:
+        console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
+        sys.exit(1)
+
+    log_path = audit_log or f"{auth.engagement_id}.audit.jsonl"
+    eng = Engagement(auth, log_path)
+
+    all_findings = []
+    exit_code = 0
+    for target in targets:
+        plugin = DeviceLocationAccuracyFloorModule(eng, timeout=timeout, tls_verify=not insecure)
+        try:
+            result = plugin.run(target, phone_number=phone_number)
         except ScopeViolation as exc:
             console.print(f"[red]✘ {exc}[/red]")
             exit_code = 1
