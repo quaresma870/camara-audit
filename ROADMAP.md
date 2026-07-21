@@ -33,17 +33,21 @@ reflects current priority, not a fixed release schedule.
   HTTP, in both an echoing (vulnerable) and a fully generic (secure)
   configuration.
 
+### v0.3.0
+- `sim_swap_rate_limit` (recon) — checks whether a CAMARA SIM Swap
+  `check` endpoint imposes any per-phone-number request throttling; an
+  endpoint with no such limit can be polled repeatedly to detect the
+  exact moment a target's SIM changes, turning an anti-fraud API into a
+  surveillance oracle. Tested against a real mock SIM Swap gateway over
+  real HTTP, in both a throttled (secure) and an unthrottled
+  (vulnerable) configuration.
+
 ## Next
 
-### More CAMARA APIs beyond Number Verification and the token endpoint
-v0.1 covered the OAuth2/OIDC layer common to every CAMARA API; v0.2
-added the first Number Verification resource-endpoint check. Next:
-further API-specific checks — SIM Swap and Device Location are the most
-widely deployed today and the natural next targets:
-- **SIM Swap**: does the API rate-limit swap-status queries per
-  phone number tightly enough to prevent using it as a surveillance
-  oracle (repeatedly querying to detect exactly when a target's SIM
-  changes)?
+### More CAMARA APIs beyond Number Verification, SIM Swap, and the token endpoint
+v0.1 covered the OAuth2/OIDC layer common to every CAMARA API; v0.2 and
+v0.3 added the first Number Verification and SIM Swap resource-endpoint
+checks. Next:
 - **Device Location**: does the API enforce the documented accuracy/
   consent-scope restrictions, or can a client request finer-grained
   location than its granted scope should allow?

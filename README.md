@@ -38,6 +38,11 @@ Early, actively developed. Covers:
   request carries no valid access token — a signal the endpoint can be
   used as an unauthenticated oracle for which numbers it actually
   processes.
+- **`sim_swap_rate_limit`** (recon tier, live scan) — checks whether a
+  CAMARA SIM Swap `check` endpoint imposes any per-phone-number request
+  throttling; an endpoint with no such limit can be polled repeatedly
+  to detect the exact moment a target's SIM changes, turning an
+  anti-fraud API into a surveillance oracle.
 - **`analyze-token`** — offline JWT claims analysis. CAMARA's own
   Security and Interoperability Profile explicitly requires a
   Three-Legged Access Token's `sub` claim to NOT be a globally unique
@@ -76,7 +81,10 @@ camara-audit scan https://staging.operator.com/oauth2/token --insecure  # self-s
 # 4. Scan a Number Verification endpoint for phone-number-echo enumeration
 camara-audit scan-number-verification https://api.operator.com/number-verification/v0/verify
 
-# 5. Analyze a token you already have for PII leakage (no authorization.yml needed)
+# 5. Scan a SIM Swap endpoint for missing per-phone-number rate limiting
+camara-audit scan-sim-swap https://api.operator.com/sim-swap/v1/check
+
+# 6. Analyze a token you already have for PII leakage (no authorization.yml needed)
 camara-audit analyze-token "eyJhbGc..."
 camara-audit analyze-token "@/path/to/token.txt"
 ```
@@ -104,13 +112,15 @@ camara-audit/
 │   ├── plugins/
 │   │   ├── base.py
 │   │   ├── token_endpoint_security.py
-│   │   └── number_verification_enumeration.py
+│   │   ├── number_verification_enumeration.py
+│   │   └── sim_swap_rate_limit.py
 │   └── analyzers/
 │       └── jwt_pii.py              # offline JWT PII leakage analysis, no Engagement gate
 ├── tests/
 │   ├── fixtures/mock_gateway/
 │   │   ├── server.py                       # a real HTTP+TLS OAuth2 token gateway, for tests only
-│   │   └── number_verification_server.py   # a real HTTP Number Verification gateway, for tests only
+│   │   ├── number_verification_server.py   # a real HTTP Number Verification gateway, for tests only
+│   │   └── sim_swap_server.py              # a real HTTP SIM Swap gateway, for tests only
 │   └── test_camara_audit.py
 └── .github/workflows/ci.yml
 ```
