@@ -14,6 +14,9 @@ from camara_audit.core.engagement import (
     ScopeViolation,
 )
 from camara_audit.core.jwt_tools import JWTDecodeError, decode_jwt_claims
+from tests.fixtures.mock_gateway.number_verification_server import (
+    start_mock_number_verification_gateway,
+)
 from tests.fixtures.mock_gateway.server import start_mock_gateway
 
 
@@ -295,3 +298,76 @@ class TestTokenEndpointSecurityPlugin:
                 assert len(result.findings) == 2
         finally:
             server.stop()
+
+
+class TestNumberVerificationEnumerationPlugin:
+    """Tested against a real mock Number Verification `verify` endpoint."""
+
+    def _engagement(self, tmp_path) -> Engagement:
+        path = tmp_path / "authorization.yml"
+        _write_auth_yaml(path)
+        return Engagement.load(path, tmp_path / "test.audit.jsonl")
+
+    def test_echoing_gateway_flagged_medium(self, tmp_path):
+        from camara_audit.plugins.number_verification_enumeration import (
+            NumberVerificationEnumerationModule,
+        )
+
+        server = start_mock_number_verification_gateway(echo_phone_number_on_error=True)
+        try:
+            eng = self._engagement(tmp_path)
+            plugin = NumberVerificationEnumerationModule(eng, timeout=5.0)
+            result = plugin.run(f"http://127.0.0.1:{server.http_port}/number-verification/v0/verify")
+            assert result.error is None
+            assert any(
+                f.severity.value == "MEDIUM" and "echoes queried phone number" in f.title
+                for f in result.findings
+            )
+        finally:
+            server.stop()
+
+    def test_generic_gateway_produces_no_critical_or_medium(self, tmp_path):
+        from camara_audit.plugins.number_verification_enumeration import (
+            NumberVerificationEnumerationModule,
+        )
+
+        server = start_mock_number_verification_gateway(echo_phone_number_on_error=False)
+        try:
+            eng = self._engagement(tmp_path)
+            plugin = NumberVerificationEnumerationModule(eng, timeout=5.0)
+            result = plugin.run(f"http://127.0.0.1:{server.http_port}/number-verification/v0/verify")
+            assert result.error is None
+            assert not any(f.severity.value in ("CRITICAL", "HIGH", "MEDIUM") for f in result.findings)
+            assert any("does not echo" in f.title for f in result.findings)
+        finally:
+            server.stop()
+
+    def test_custom_phone_number_is_the_one_tested_for_echo(self, tmp_path):
+        from camara_audit.plugins.number_verification_enumeration import (
+            NumberVerificationEnumerationModule,
+        )
+
+        server = start_mock_number_verification_gateway(echo_phone_number_on_error=True)
+        try:
+            eng = self._engagement(tmp_path)
+            plugin = NumberVerificationEnumerationModule(eng, timeout=5.0)
+            result = plugin.run(
+                f"http://127.0.0.1:{server.http_port}/number-verification/v0/verify",
+                phone_number="+447700900123",
+            )
+            assert result.error is None
+            assert any("+447700900123" in f.evidence for f in result.findings)
+        finally:
+            server.stop()
+
+    def test_out_of_scope_target_produces_module_error_not_crash(self, tmp_path):
+        from camara_audit.plugins.number_verification_enumeration import (
+            NumberVerificationEnumerationModule,
+        )
+
+        eng = self._engagement(tmp_path)
+        result = NumberVerificationEnumerationModule(eng, timeout=5.0).run(
+            "https://10.0.0.99/number-verification/v0/verify"
+        )
+        assert result.error is not None
+        assert "scope" in result.error.lower()

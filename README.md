@@ -25,13 +25,19 @@ exists to help with. Same tamper-evident audit log design as the sibling
 
 ## Status
 
-Early, actively developed. v0.1 covers:
+Early, actively developed. Covers:
 
 - **`token_endpoint_security`** (recon tier, live scan) — checks a CAMARA
   OAuth2/OIDC token endpoint for two real, documented anti-patterns:
   HTTPS not enforced, and client credentials accepted via URL query
   string (RFC 6749 §2.3.1 requires POST body or Basic auth only — query
   strings get logged everywhere: proxies, load balancers, access logs).
+- **`number_verification_enumeration`** (recon tier, live scan) — checks
+  whether a CAMARA Number Verification `verify` endpoint echoes the
+  queried phone number back in its error response, even when the
+  request carries no valid access token — a signal the endpoint can be
+  used as an unauthenticated oracle for which numbers it actually
+  processes.
 - **`analyze-token`** — offline JWT claims analysis. CAMARA's own
   Security and Interoperability Profile explicitly requires a
   Three-Legged Access Token's `sub` claim to NOT be a globally unique
@@ -39,8 +45,9 @@ Early, actively developed. v0.1 covers:
   documented spec requirement (and a few adjacent claims for the same
   class of leak). File/data analysis only, no live target touched.
 
-Both are tested against a real mock OAuth2/CAMARA-style gateway over
-real HTTP and TLS sockets — not simulated or assumed.
+All live-scan plugins are tested against a real mock OAuth2/CAMARA-style
+gateway over real HTTP (and, for the token endpoint, TLS) sockets — not
+simulated or assumed.
 
 See [ROADMAP.md](ROADMAP.md) for what's planned next.
 
@@ -66,7 +73,10 @@ camara-audit validate-scope
 camara-audit scan https://api.operator.com/oauth2/token
 camara-audit scan https://staging.operator.com/oauth2/token --insecure  # self-signed cert
 
-# 4. Analyze a token you already have for PII leakage (no authorization.yml needed)
+# 4. Scan a Number Verification endpoint for phone-number-echo enumeration
+camara-audit scan-number-verification https://api.operator.com/number-verification/v0/verify
+
+# 5. Analyze a token you already have for PII leakage (no authorization.yml needed)
 camara-audit analyze-token "eyJhbGc..."
 camara-audit analyze-token "@/path/to/token.txt"
 ```
@@ -93,11 +103,14 @@ camara-audit/
 │   │   └── models.py               # Finding, Severity, ModuleResult
 │   ├── plugins/
 │   │   ├── base.py
-│   │   └── token_endpoint_security.py
+│   │   ├── token_endpoint_security.py
+│   │   └── number_verification_enumeration.py
 │   └── analyzers/
 │       └── jwt_pii.py              # offline JWT PII leakage analysis, no Engagement gate
 ├── tests/
-│   ├── fixtures/mock_gateway/server.py   # a real HTTP+TLS OAuth2 token gateway, for tests only
+│   ├── fixtures/mock_gateway/
+│   │   ├── server.py                       # a real HTTP+TLS OAuth2 token gateway, for tests only
+│   │   └── number_verification_server.py   # a real HTTP Number Verification gateway, for tests only
 │   └── test_camara_audit.py
 └── .github/workflows/ci.yml
 ```
