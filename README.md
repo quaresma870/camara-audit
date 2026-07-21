@@ -63,6 +63,12 @@ Early, actively developed. Covers:
   file, and `camara-audit dashboard --db path.db` serves a read-only
   local web dashboard over it (filterable by severity/module) — no new
   dependency, built on the standard library's `sqlite3`/`http.server`.
+- **`analyze-token --verify-signature`** (opt-in) — fetches the
+  issuer's real JWKS (via OIDC discovery from the token's `iss` claim,
+  or an explicit `--jwks-url`) and verifies the token's signature and
+  expiry, in addition to the offline claims analysis. The only
+  `analyze-token` path that touches the network — off by default,
+  makes one or two real outbound HTTPS requests when enabled.
 
 All live-scan plugins are tested against a real mock OAuth2/CAMARA-style
 gateway over real HTTP (and, for the token endpoint, TLS) sockets — not
@@ -108,6 +114,10 @@ camara-audit dashboard --db results.db   # http://127.0.0.1:8765/
 # 8. Analyze a token you already have for PII leakage (no authorization.yml needed)
 camara-audit analyze-token "eyJhbGc..."
 camara-audit analyze-token "@/path/to/token.txt"
+
+# 9. Opt-in: also verify the token's signature + expiry against the issuer's real JWKS
+camara-audit analyze-token "eyJhbGc..." --verify-signature
+camara-audit analyze-token "eyJhbGc..." --jwks-url https://api.operator.com/.well-known/jwks.json
 ```
 
 ## The audit log
@@ -129,6 +139,7 @@ camara-audit/
 │   │   ├── audit_log.py            # hash-chained, append-only audit log
 │   │   ├── rate_limit.py           # rate budget defaults
 │   │   ├── jwt_tools.py            # unverified JWT claims decoding
+│   │   ├── jwt_verify.py           # opt-in JWKS-backed signature + expiry verification
 │   │   ├── storage.py              # SQLite persistence for --db
 │   │   └── models.py               # Finding, Severity, ModuleResult
 │   ├── plugins/
@@ -138,7 +149,8 @@ camara-audit/
 │   │   ├── sim_swap_rate_limit.py
 │   │   └── device_location_accuracy_floor.py
 │   ├── analyzers/
-│   │   └── jwt_pii.py              # offline JWT PII leakage analysis, no Engagement gate
+│   │   ├── jwt_pii.py              # offline JWT PII leakage analysis, no Engagement gate
+│   │   └── jwt_signature.py        # findings wrapper around core/jwt_verify.py
 │   └── reports/
 │       ├── terminal.py             # Rich terminal output
 │       └── dashboard.py            # read-only web dashboard over a --db SQLite file
@@ -147,7 +159,8 @@ camara-audit/
 │   │   ├── server.py                       # a real HTTP+TLS OAuth2 token gateway, for tests only
 │   │   ├── number_verification_server.py   # a real HTTP Number Verification gateway, for tests only
 │   │   ├── sim_swap_server.py              # a real HTTP SIM Swap gateway, for tests only
-│   │   └── device_location_server.py       # a real HTTP Device Location gateway, for tests only
+│   │   ├── device_location_server.py       # a real HTTP Device Location gateway, for tests only
+│   │   └── jwks_server.py                  # a real HTTP OIDC issuer/JWKS gateway, for tests only
 │   └── test_camara_audit.py
 └── .github/workflows/ci.yml
 ```

@@ -8,6 +8,10 @@ Interoperability Profile explicitly forbids"), not asked to establish
 trust in the token as a credential. Signature verification would also
 require the issuer's public key/JWKS endpoint, which isn't always
 reachable or relevant to what this specific check needs.
+
+For the separate, explicit opt-in case where full signature + expiry
+verification IS wanted, see core/jwt_verify.py (used by
+`analyze-token --verify-signature`).
 """
 
 from __future__ import annotations

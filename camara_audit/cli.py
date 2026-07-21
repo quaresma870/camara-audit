@@ -394,12 +394,29 @@ def scan_device_location(
 @click.option("--db", "db_path", default=None, type=click.Path(),
               help="Persist findings to a SQLite database at this path, for later viewing "
                    "with `camara-audit dashboard --db <path>`.")
-def analyze_token(token, json_output, db_path):
+@click.option("--verify-signature", is_flag=True,
+              help="Opt-in: fetch the issuer's JWKS over HTTPS and verify the token's signature "
+                   "and expiry, in addition to the offline claims analysis. Makes one or two "
+                   "real outbound HTTPS requests (OIDC discovery, then the JWKS endpoint).")
+@click.option("--jwks-url", default=None,
+              help="Explicit JWKS endpoint URL for --verify-signature — skips OIDC discovery.")
+@click.option("--issuer", default=None,
+              help="Explicit issuer URL for --verify-signature's OIDC discovery — overrides the "
+                   "token's own 'iss' claim, if any.")
+@click.option("--timeout", default=10.0, show_default=True, type=float,
+              help="Timeout for the JWKS/discovery requests made by --verify-signature.")
+@click.option("--insecure", is_flag=True,
+              help="Skip TLS certificate verification when fetching the JWKS for --verify-signature.")
+def analyze_token(token, json_output, db_path, verify_signature, jwks_url, issuer, timeout, insecure):
     """Analyze a JWT (access/ID token) for PII leakage in its claims.
 
-    File/data analysis only — no live target is touched, so no
-    authorization.yml is needed for this command. Pass the raw token
-    string, or '@path/to/file' to read it from a file.
+    File/data analysis only by default — no live target is touched, so
+    no authorization.yml is needed for this command. Pass the raw
+    token string, or '@path/to/file' to read it from a file.
+
+    --verify-signature is the one opt-in exception: it fetches the
+    issuer's JWKS over HTTPS to verify the token's signature and
+    expiry against real published key material.
     """
     from camara_audit.analyzers.jwt_pii import analyze_jwt_for_pii
     from camara_audit.core.models import ModuleResult
@@ -408,25 +425,35 @@ def analyze_token(token, json_output, db_path):
     if token.startswith("@"):
         token = Path(token[1:]).read_text(encoding="utf-8").strip()
 
-    result = ModuleResult(module="jwt_pii_leakage", findings=analyze_jwt_for_pii(token, source_label="token"))
-    findings = result.findings
-    print_results("token", [result])
+    results = [ModuleResult(module="jwt_pii_leakage", findings=analyze_jwt_for_pii(token, source_label="token"))]
+
+    if verify_signature or jwks_url:
+        from camara_audit.analyzers.jwt_signature import verify_jwt_signature_findings
+
+        sig_findings = verify_jwt_signature_findings(
+            token, jwks_url=jwks_url, issuer=issuer, timeout=timeout, tls_verify=not insecure,
+        )
+        results.append(ModuleResult(module="jwt_signature_verification", findings=sig_findings))
+
+    print_results("token", results)
+    all_findings = [f for r in results for f in r.findings]
 
     if json_output:
         import json as json_module
         with open(json_output, "w") as f:
-            json_module.dump([f.to_dict() for f in findings], f, indent=2)
-        console.print(f"[green]✔[/green] Wrote {len(findings)} finding(s) to {json_output}")
+            json_module.dump([f.to_dict() for f in all_findings], f, indent=2)
+        console.print(f"[green]✔[/green] Wrote {len(all_findings)} finding(s) to {json_output}")
 
     if db_path:
         from camara_audit.core.storage import open_db, record_result
 
         db_conn = open_db(db_path)
-        record_result(db_conn, "offline-analysis", "token", result)
+        for r in results:
+            record_result(db_conn, "offline-analysis", "token", r)
         db_conn.close()
         console.print(f"[green]✔[/green] Persisted results to {db_path}")
 
-    if any(f.severity.value == "CRITICAL" for f in findings):
+    if any(f.severity.value == "CRITICAL" for f in all_findings):
         sys.exit(1)
 
 

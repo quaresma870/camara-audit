@@ -3,6 +3,23 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features and usage.
 
+### v0.6.0
+- feat: **`analyze-token --verify-signature`** (opt-in) — fetches the issuer's real JWKS (via OIDC
+  discovery from the token's `iss` claim, or an explicit `--jwks-url`/`--issuer`) and verifies the
+  token's signature and expiry, using PyJWT (`pyjwt[crypto]`, new dependency) rather than
+  hand-rolled RSA/EC signature math. `core/jwt_tools.py`'s claims-only decoding remains fully
+  offline and unchanged — this is the one explicit, opt-in path in `analyze-token` that makes a
+  real outbound HTTPS request.
+- feat: severities are deliberately conservative — an expired or not-yet-valid token is reported
+  as INFO (routine, not a finding by itself), while a signature that matches no key the issuer
+  actually publishes is MEDIUM, with the finding honestly noting a mismatched issuer/JWKS URL is
+  at least as plausible an explanation as forgery.
+- test: new mock OIDC issuer fixture (real HTTP, real RSA key pairs via `cryptography`) serving a
+  real `/.well-known/openid-configuration` document and JWKS; covers a genuinely valid signature,
+  a genuinely forged one (signed with a different real key), expiry, unknown `kid`, and missing
+  `iss`/`jwks_url`. CI's integration test signs real tokens with a real generated key and exercises
+  both the valid and forged cases against `analyze-token --verify-signature`.
+
 ### v0.5.0
 - feat: **persistence + dashboard** — every `scan*`/`analyze-token` command now takes a
   `--db path.db` flag that persists findings to a local SQLite database (`camara_audit/core/
