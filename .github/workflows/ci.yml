@@ -227,6 +227,45 @@ jobs:
 
           kill $MOCK_SS_PID 2>/dev/null || true
 
+          echo "::group::Start a real mock Device Location gateway (enforces a 1000m radius floor)"
+          PYTHONPATH="$GITHUB_WORKSPACE" python3 -c "
+          import sys, time
+          sys.path.insert(0, '$GITHUB_WORKSPACE')
+          from tests.fixtures.mock_gateway.device_location_server import start_mock_device_location_gateway
+          server = start_mock_device_location_gateway(radius_floor_meters=1000)
+          with open('/tmp/mock_dl_port.txt', 'w') as f:
+              f.write(str(server.http_port))
+          time.sleep(180)
+          " > /tmp/mock_dl_gateway.log 2>&1 &
+          MOCK_DL_PID=$!
+          for i in $(seq 1 20); do
+            if [ -f /tmp/mock_dl_port.txt ]; then
+              break
+            fi
+            sleep 0.5
+          done
+          if [ ! -f /tmp/mock_dl_port.txt ]; then
+            echo "::error::Mock Device Location gateway never wrote its port file. Log:"
+            cat /tmp/mock_dl_gateway.log || true
+            exit 1
+          fi
+          DL_PORT=$(cat /tmp/mock_dl_port.txt)
+          echo "Mock Device Location gateway — HTTP: $DL_PORT (pid $MOCK_DL_PID)"
+          echo "::endgroup::"
+
+          echo "::group::scan-device-location — real accuracy-floor-enforced detection"
+          $CA scan-device-location "http://127.0.0.1:$DL_PORT/location-verification/v1/verify" --json /tmp/scan5.json || true
+          cat /tmp/scan5.json
+          python3 -c "
+          import json
+          findings = json.load(open('/tmp/scan5.json'))
+          assert any('validate area radius independently' in f['title'] for f in findings), f'expected accuracy-floor finding not found: {findings}'
+          print('OK: accuracy-floor finding present')
+          "
+          echo "::endgroup::"
+
+          kill $MOCK_DL_PID 2>/dev/null || true
+
           echo "::group::analyze-token — real PII detection"
           TOKEN=$(python3 -c "
           import base64, json

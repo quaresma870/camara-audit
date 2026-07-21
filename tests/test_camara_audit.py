@@ -14,6 +14,9 @@ from camara_audit.core.engagement import (
     ScopeViolation,
 )
 from camara_audit.core.jwt_tools import JWTDecodeError, decode_jwt_claims
+from tests.fixtures.mock_gateway.device_location_server import (
+    start_mock_device_location_gateway,
+)
 from tests.fixtures.mock_gateway.number_verification_server import (
     start_mock_number_verification_gateway,
 )
@@ -440,6 +443,65 @@ class TestSimSwapRateLimitPlugin:
         eng = self._engagement(tmp_path)
         result = SimSwapRateLimitModule(eng, timeout=5.0).run(
             "https://10.0.0.99/sim-swap/v1/check", probe_count=5
+        )
+        assert result.error is not None
+        assert "scope" in result.error.lower()
+
+
+class TestDeviceLocationAccuracyFloorPlugin:
+    """Tested against a real mock Device Location Verification `verify` endpoint."""
+
+    def _engagement(self, tmp_path) -> Engagement:
+        path = tmp_path / "authorization.yml"
+        _write_auth_yaml(path)
+        return Engagement.load(path, tmp_path / "test.audit.jsonl")
+
+    def test_floor_enforced_independently_of_auth_produces_positive_info(self, tmp_path):
+        from camara_audit.plugins.device_location_accuracy_floor import (
+            DeviceLocationAccuracyFloorModule,
+        )
+
+        server = start_mock_device_location_gateway(radius_floor_meters=1000)
+        try:
+            eng = self._engagement(tmp_path)
+            plugin = DeviceLocationAccuracyFloorModule(eng, timeout=5.0)
+            result = plugin.run(f"http://127.0.0.1:{server.http_port}/location-verification/v1/verify")
+            assert result.error is None
+            assert not any(f.severity.value in ("CRITICAL", "HIGH", "MEDIUM") for f in result.findings)
+            assert any(
+                f.severity.value == "INFO" and "validate area radius independently" in f.title
+                for f in result.findings
+            )
+        finally:
+            server.stop()
+
+    def test_no_floor_signal_produces_low_inconclusive_finding(self, tmp_path):
+        from camara_audit.plugins.device_location_accuracy_floor import (
+            DeviceLocationAccuracyFloorModule,
+        )
+
+        server = start_mock_device_location_gateway(radius_floor_meters=None)
+        try:
+            eng = self._engagement(tmp_path)
+            plugin = DeviceLocationAccuracyFloorModule(eng, timeout=5.0)
+            result = plugin.run(f"http://127.0.0.1:{server.http_port}/location-verification/v1/verify")
+            assert result.error is None
+            assert not any(f.severity.value in ("CRITICAL", "HIGH", "MEDIUM") for f in result.findings)
+            assert any(
+                f.severity.value == "LOW" and "Could not determine" in f.title
+                for f in result.findings
+            )
+        finally:
+            server.stop()
+
+    def test_out_of_scope_target_produces_module_error_not_crash(self, tmp_path):
+        from camara_audit.plugins.device_location_accuracy_floor import (
+            DeviceLocationAccuracyFloorModule,
+        )
+
+        eng = self._engagement(tmp_path)
+        result = DeviceLocationAccuracyFloorModule(eng, timeout=5.0).run(
+            "https://10.0.0.99/location-verification/v1/verify"
         )
         assert result.error is not None
         assert "scope" in result.error.lower()

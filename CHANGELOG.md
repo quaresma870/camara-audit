@@ -3,6 +3,21 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features and usage.
 
+### v0.4.0
+- feat: **`device_location_accuracy_floor`** (recon tier) — checks a CAMARA Device Location
+  Verification `verify` endpoint for signs it enforces a minimum area radius (an accuracy floor)
+  independently of authentication. Grounded in the spec's own `Circle` schema note that
+  implementations "may enforce a larger minimum radius (e.g. 1000 meters)" beyond the bare
+  `minimum: 1` the schema requires. Honestly reports an inconclusive result as LOW (not a false
+  MEDIUM/HIGH claim) when it can't confirm the floor without a real authenticated token. New
+  `scan-device-location` CLI command.
+- test: new mock Device Location gateway fixture (real HTTP), covering both a
+  pre-authentication-radius-floor-enforcing and a non-enforcing configuration; CI's integration
+  test now also runs `scan-device-location` against it.
+- This closes out the "more CAMARA APIs" roadmap goal from v0.1: Number Verification, SIM Swap,
+  and Device Location — the three most widely deployed CAMARA APIs today — each now have at least
+  one live check.
+
 ### v0.3.0
 - feat: **`sim_swap_rate_limit`** (recon tier) — checks a CAMARA SIM Swap `check` endpoint for
   whether it imposes any per-phone-number request throttling; an endpoint that answers an

@@ -42,15 +42,26 @@ reflects current priority, not a fixed release schedule.
   real HTTP, in both a throttled (secure) and an unthrottled
   (vulnerable) configuration.
 
-## Next
+### v0.4.0
+- `device_location_accuracy_floor` (recon) — checks whether a CAMARA
+  Device Location Verification `verify` endpoint shows signs of
+  enforcing a minimum area radius independently of authentication. The
+  spec's own `Circle` schema only requires `radius >= 1` meter, with an
+  explicit note that implementations "may enforce a larger minimum
+  radius (e.g. 1000 meters)" for privacy/regulatory reasons. Unlike the
+  two checks above, this one is honest about a real limitation: without
+  a valid, scope-limited access token it cannot confirm what an
+  authenticated caller would actually be granted, so an inconclusive
+  result is reported as LOW ("needs an authenticated follow-up"), never
+  as a false MEDIUM/HIGH claim. Tested against a real mock Device
+  Location gateway over real HTTP, both with and without a
+  pre-authentication radius floor.
 
-### More CAMARA APIs beyond Number Verification, SIM Swap, and the token endpoint
-v0.1 covered the OAuth2/OIDC layer common to every CAMARA API; v0.2 and
-v0.3 added the first Number Verification and SIM Swap resource-endpoint
-checks. Next:
-- **Device Location**: does the API enforce the documented accuracy/
-  consent-scope restrictions, or can a client request finer-grained
-  location than its granted scope should allow?
+This closes out v0.1's "more CAMARA APIs" goal: Number Verification,
+SIM Swap, and Device Location — the three most widely deployed CAMARA
+APIs today — each now have at least one live check.
+
+## Next
 
 ### Scope enforcement testing
 A live check for whether an API endpoint actually rejects a request
