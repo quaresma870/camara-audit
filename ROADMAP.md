@@ -23,16 +23,23 @@ reflects current priority, not a fixed release schedule.
   documented command against a real mock gateway (both a securely and a
   deliberately vulnerably configured instance).
 
+### v0.2.0
+- `number_verification_enumeration` (recon) — checks whether a CAMARA
+  Number Verification `verify` endpoint echoes the queried phone number
+  back in its error response even on a failed/denied (invalid-token)
+  request, which would let an attacker use the endpoint as an
+  unauthenticated oracle for which numbers it actually processes.
+  Tested against a real mock Number Verification gateway over real
+  HTTP, in both an echoing (vulnerable) and a fully generic (secure)
+  configuration.
+
 ## Next
 
-### More CAMARA APIs beyond Number Verification's token endpoint
-v0.1 focuses on the OAuth2/OIDC layer common to every CAMARA API. Next:
-API-specific checks for the actual resource endpoints —
-Number Verification, SIM Swap, and Device Location are the most widely
-deployed today and the natural next targets:
-- **Number Verification**: does the API's error response ever echo back
-  the queried phone number in a way that lets an attacker enumerate
-  which numbers are valid/registered, even on a failed/denied request?
+### More CAMARA APIs beyond Number Verification and the token endpoint
+v0.1 covered the OAuth2/OIDC layer common to every CAMARA API; v0.2
+added the first Number Verification resource-endpoint check. Next:
+further API-specific checks — SIM Swap and Device Location are the most
+widely deployed today and the natural next targets:
 - **SIM Swap**: does the API rate-limit swap-status queries per
   phone number tightly enough to prevent using it as a surveillance
   oracle (repeatedly querying to detect exactly when a target's SIM

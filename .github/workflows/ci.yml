@@ -149,6 +149,45 @@ jobs:
           "
           echo "::endgroup::"
 
+          echo "::group::Start a real mock Number Verification gateway (echoes phone number on error)"
+          PYTHONPATH="$GITHUB_WORKSPACE" python3 -c "
+          import sys, time
+          sys.path.insert(0, '$GITHUB_WORKSPACE')
+          from tests.fixtures.mock_gateway.number_verification_server import start_mock_number_verification_gateway
+          server = start_mock_number_verification_gateway(echo_phone_number_on_error=True)
+          with open('/tmp/mock_nv_port.txt', 'w') as f:
+              f.write(str(server.http_port))
+          time.sleep(180)
+          " > /tmp/mock_nv_gateway.log 2>&1 &
+          MOCK_NV_PID=$!
+          for i in $(seq 1 20); do
+            if [ -f /tmp/mock_nv_port.txt ]; then
+              break
+            fi
+            sleep 0.5
+          done
+          if [ ! -f /tmp/mock_nv_port.txt ]; then
+            echo "::error::Mock Number Verification gateway never wrote its port file. Log:"
+            cat /tmp/mock_nv_gateway.log || true
+            exit 1
+          fi
+          NV_PORT=$(cat /tmp/mock_nv_port.txt)
+          echo "Mock Number Verification gateway — HTTP: $NV_PORT (pid $MOCK_NV_PID)"
+          echo "::endgroup::"
+
+          echo "::group::scan-number-verification — real phone-number-echo detection"
+          $CA scan-number-verification "http://127.0.0.1:$NV_PORT/number-verification/v0/verify" --json /tmp/scan3.json || true
+          cat /tmp/scan3.json
+          python3 -c "
+          import json
+          findings = json.load(open('/tmp/scan3.json'))
+          assert any('echoes queried phone number' in f['title'] for f in findings), f'expected echo finding not found: {findings}'
+          print('OK: phone-number-echo finding present')
+          "
+          echo "::endgroup::"
+
+          kill $MOCK_NV_PID 2>/dev/null || true
+
           echo "::group::analyze-token — real PII detection"
           TOKEN=$(python3 -c "
           import base64, json

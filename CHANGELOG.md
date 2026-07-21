@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features and usage.
 
+### v0.2.0
+- feat: **`number_verification_enumeration`** (recon tier) — checks a CAMARA Number Verification
+  `verify` endpoint for whether its error response echoes back the queried phone number on a
+  failed/denied (invalid-token) request, which would let an attacker use the endpoint as an
+  unauthenticated oracle for which numbers it actually processes. New `scan-number-verification`
+  CLI command.
+- test: new mock Number Verification gateway fixture (real HTTP), covering both an echoing
+  (vulnerable) and a fully generic (secure) configuration; CI's integration test now also runs
+  `scan-number-verification` against it.
+
 ### v0.1.0
 - feat: **initial release** — authorized CAMARA/Open Gateway API security auditing CLI.
   Authorization/scope model and hash-chained tamper-evident audit logging adapted directly from
