@@ -299,5 +299,108 @@ jobs:
           "
           echo "::endgroup::"
 
+          echo "::group::Generate a real RSA key pair for JWKS-backed signature verification"
+          /tmp/smoke-venv/bin/python3 -c "
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric import rsa
+
+          key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+          pem = key.private_bytes(
+              encoding=serialization.Encoding.PEM,
+              format=serialization.PrivateFormat.PKCS8,
+              encryption_algorithm=serialization.NoEncryption(),
+          )
+          with open('/tmp/oidc_key.pem', 'wb') as f:
+              f.write(pem)
+          "
+          echo "::endgroup::"
+
+          echo "::group::Start a real mock OIDC issuer serving that key's real JWKS"
+          /tmp/smoke-venv/bin/python3 -c "
+          import sys, time, json
+          sys.path.insert(0, '$GITHUB_WORKSPACE')
+          from cryptography.hazmat.primitives import serialization
+          from jwt.algorithms import RSAAlgorithm
+          from tests.fixtures.mock_gateway.jwks_server import start_mock_oidc_issuer
+
+          key = serialization.load_pem_private_key(open('/tmp/oidc_key.pem', 'rb').read(), password=None)
+          jwk = json.loads(RSAAlgorithm.to_jwk(key.public_key()))
+          jwk.update({'kid': 'ci-key-1', 'use': 'sig', 'alg': 'RS256'})
+          server = start_mock_oidc_issuer(jwks_document={'keys': [jwk]})
+          with open('/tmp/mock_oidc_port.txt', 'w') as f:
+              f.write(str(server.http_port))
+          time.sleep(180)
+          " > /tmp/mock_oidc.log 2>&1 &
+          MOCK_OIDC_PID=$!
+          for i in $(seq 1 20); do
+            if [ -f /tmp/mock_oidc_port.txt ]; then
+              break
+            fi
+            sleep 0.5
+          done
+          if [ ! -f /tmp/mock_oidc_port.txt ]; then
+            echo "::error::Mock OIDC issuer never wrote its port file. Log:"
+            cat /tmp/mock_oidc.log || true
+            exit 1
+          fi
+          OIDC_PORT=$(cat /tmp/mock_oidc_port.txt)
+          ISSUER="http://127.0.0.1:$OIDC_PORT"
+          echo "Mock OIDC issuer — HTTP: $OIDC_PORT (pid $MOCK_OIDC_PID)"
+          echo "::endgroup::"
+
+          echo "::group::analyze-token --verify-signature — real signature verification (valid case)"
+          # Signed with the SAME real private key the mock issuer just
+          # published in its JWKS — a genuine cryptographic check, not
+          # a stubbed 'always true' result.
+          VALID_TOKEN=$(/tmp/smoke-venv/bin/python3 -c "
+          import jwt
+          from cryptography.hazmat.primitives import serialization
+
+          key = serialization.load_pem_private_key(open('/tmp/oidc_key.pem', 'rb').read(), password=None)
+          print(jwt.encode(
+              {'sub': 'opaque-id', 'iss': '$ISSUER', 'exp': 9999999999},
+              key, algorithm='RS256', headers={'kid': 'ci-key-1'},
+          ))
+          ")
+          $CA analyze-token "$VALID_TOKEN" --verify-signature --insecure --json /tmp/sig_valid.json || true
+          cat /tmp/sig_valid.json
+          python3 -c "
+          import json
+          findings = json.load(open('/tmp/sig_valid.json'))
+          assert any(
+              f['module'] == 'jwt_signature_verification' and f['severity'] == 'INFO' and 'valid' in f['title'].lower()
+              for f in findings
+          ), f'expected a valid-signature INFO finding not found: {findings}'
+          print('OK: valid-signature finding present')
+          "
+          echo "::endgroup::"
+
+          echo "::group::analyze-token --verify-signature — real signature verification (forged case)"
+          # Signed with a DIFFERENT, freshly-generated key that the
+          # JWKS never published — must NOT verify.
+          FORGED_TOKEN=$(/tmp/smoke-venv/bin/python3 -c "
+          import jwt
+          from cryptography.hazmat.primitives.asymmetric import rsa
+
+          forged_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+          print(jwt.encode(
+              {'sub': 'opaque-id', 'iss': '$ISSUER', 'exp': 9999999999},
+              forged_key, algorithm='RS256', headers={'kid': 'ci-key-1'},
+          ))
+          ")
+          $CA analyze-token "$FORGED_TOKEN" --verify-signature --insecure --json /tmp/sig_forged.json || true
+          cat /tmp/sig_forged.json
+          python3 -c "
+          import json
+          findings = json.load(open('/tmp/sig_forged.json'))
+          assert any(
+              f['module'] == 'jwt_signature_verification' and f['severity'] == 'MEDIUM'
+              for f in findings
+          ), f'expected a MEDIUM signature-mismatch finding not found: {findings}'
+          print('OK: signature-mismatch finding present')
+          "
+          echo "::endgroup::"
+
+          kill $MOCK_OIDC_PID 2>/dev/null || true
           kill $MOCK_PID 2>/dev/null || true
           echo "All integration checks passed."

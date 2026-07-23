@@ -71,6 +71,22 @@ APIs today — each now have at least one live check.
   approach. The dashboard is tested against a real HTTP server (its
   own), not mocked.
 
+### v0.6.0
+- `analyze-token --verify-signature` (opt-in) — fetches the issuer's
+  real JWKS (via OIDC discovery from the token's `iss` claim, or an
+  explicit `--jwks-url`) and verifies the token's signature and expiry
+  using PyJWT + cryptography rather than hand-rolled RSA/EC math. The
+  one and only network-touching path in `analyze-token`, off by
+  default — `core/jwt_tools.py`'s claims-only decoding stays fully
+  offline as before. Severities are deliberately conservative: an
+  expired/not-yet-valid token is routine (INFO, not a finding by
+  itself), while a signature that matches no published key is reported
+  as MEDIUM with an honest note that a mismatched issuer/JWKS URL is at
+  least as likely an explanation as forgery. Tested against a real
+  mock OIDC issuer serving a real RSA key's JWKS over real HTTP — both
+  a genuinely valid signature and a genuinely forged one (signed with a
+  different real key) are exercised, not simulated.
+
 ## Next
 
 ### Scope enforcement testing
@@ -81,11 +97,5 @@ required scope...") gives a concrete signature to test for. Needs a
 real token with a deliberately-wrong scope to test with, which is a
 bigger practical hurdle than the token-endpoint-only checks shipped so
 far (real sandbox credentials from an actual CAMARA-supporting operator
-are needed to obtain one).
-
-### JWT signature verification (optional, opt-in)
-`analyze-token` deliberately never verifies a token's signature today
-(see `core/jwt_tools.py`'s own docstring for why) — an opt-in mode that
-fetches the issuer's JWKS and verifies signature + expiry would be a
-useful, separate addition for auditing a token's full validity, not
-just its claim contents.
+are needed to obtain one) — this is currently the only remaining
+roadmap item blocked on that requirement.

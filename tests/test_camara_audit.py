@@ -3,10 +3,14 @@ from __future__ import annotations
 import base64
 import datetime
 import json
+import time
 from pathlib import Path
 
+import jwt as pyjwt
 import pytest
 import requests
+from cryptography.hazmat.primitives.asymmetric import rsa
+from jwt.algorithms import RSAAlgorithm
 
 from camara_audit.core.authorization import AuthorizationError, load_authorization
 from camara_audit.core.engagement import (
@@ -19,6 +23,7 @@ from camara_audit.core.models import Finding, FindingCategory, ModuleResult, Sev
 from tests.fixtures.mock_gateway.device_location_server import (
     start_mock_device_location_gateway,
 )
+from tests.fixtures.mock_gateway.jwks_server import start_mock_oidc_issuer
 from tests.fixtures.mock_gateway.number_verification_server import (
     start_mock_number_verification_gateway,
 )
@@ -33,6 +38,20 @@ def _b64url(d: dict) -> str:
 def _make_jwt(payload: dict, header: dict | None = None) -> str:
     header = header or {"alg": "RS256", "typ": "JWT"}
     return _b64url(header) + "." + _b64url(payload) + ".fakesignature"
+
+
+def _generate_rsa_keypair():
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+def _jwk_dict(private_key, kid: str) -> dict:
+    jwk = json.loads(RSAAlgorithm.to_jwk(private_key.public_key()))
+    jwk.update({"kid": kid, "use": "sig", "alg": "RS256"})
+    return jwk
+
+
+def _sign_token(private_key, kid: str, payload: dict) -> str:
+    return pyjwt.encode(payload, private_key, algorithm="RS256", headers={"kid": kid})
 
 
 def _write_auth_yaml(path: Path, **overrides) -> None:
@@ -127,6 +146,140 @@ class TestJWTPIIAnalysis:
 
         token = _make_jwt({"sub": "2001"})
         findings = analyze_jwt_for_pii(token)
+        assert findings[0].severity.value == "INFO"
+
+
+class TestJWTSignatureVerification:
+    """Tested against a real mock OIDC issuer (real HTTP) and real RSA
+    key pairs signed/verified via PyJWT + cryptography — no simulated
+    or hand-rolled crypto."""
+
+    def test_valid_signature_verifies(self):
+        from camara_audit.core.jwt_verify import verify_jwt_signature
+
+        private_key = _generate_rsa_keypair()
+        server = start_mock_oidc_issuer(jwks_document={"keys": [_jwk_dict(private_key, "k1")]})
+        try:
+            token = _sign_token(private_key, "k1", {
+                "sub": "opaque-id", "iss": server.base_url, "exp": int(time.time()) + 3600,
+            })
+            result = verify_jwt_signature(token, tls_verify=False)
+            assert result.verified is True
+            assert "valid" in result.reason.lower()
+        finally:
+            server.stop()
+
+    def test_wrong_signing_key_fails_verification(self):
+        """Regression-style check: the token is signed with one real
+        RSA key but the JWKS publishes a *different* real RSA key under
+        the same kid — signature must NOT verify."""
+        from camara_audit.core.jwt_verify import verify_jwt_signature
+
+        signing_key = _generate_rsa_keypair()
+        published_key = _generate_rsa_keypair()
+        server = start_mock_oidc_issuer(jwks_document={"keys": [_jwk_dict(published_key, "k1")]})
+        try:
+            token = _sign_token(signing_key, "k1", {
+                "sub": "opaque-id", "iss": server.base_url, "exp": int(time.time()) + 3600,
+            })
+            result = verify_jwt_signature(token, tls_verify=False)
+            assert result.verified is False
+            assert "does NOT match" in result.reason
+        finally:
+            server.stop()
+
+    def test_expired_token_reports_expired_not_generic_failure(self):
+        from camara_audit.core.jwt_verify import verify_jwt_signature
+
+        private_key = _generate_rsa_keypair()
+        server = start_mock_oidc_issuer(jwks_document={"keys": [_jwk_dict(private_key, "k1")]})
+        try:
+            token = _sign_token(private_key, "k1", {
+                "sub": "opaque-id", "iss": server.base_url, "exp": int(time.time()) - 3600,
+            })
+            result = verify_jwt_signature(token, tls_verify=False)
+            assert result.verified is False
+            assert "expired" in result.reason.lower()
+        finally:
+            server.stop()
+
+    def test_explicit_jwks_url_skips_discovery(self):
+        from camara_audit.core.jwt_verify import verify_jwt_signature
+
+        private_key = _generate_rsa_keypair()
+        server = start_mock_oidc_issuer(jwks_document={"keys": [_jwk_dict(private_key, "k1")]})
+        try:
+            token = _sign_token(private_key, "k1", {"sub": "opaque-id", "exp": int(time.time()) + 3600})
+            result = verify_jwt_signature(
+                token, jwks_url=f"{server.base_url}/jwks.json", tls_verify=False,
+            )
+            assert result.verified is True
+        finally:
+            server.stop()
+
+    def test_no_iss_and_no_jwks_url_raises(self):
+        from camara_audit.core.jwt_verify import JWTVerificationError, verify_jwt_signature
+
+        private_key = _generate_rsa_keypair()
+        token = _sign_token(private_key, "k1", {"sub": "opaque-id"})
+        with pytest.raises(JWTVerificationError, match="iss"):
+            verify_jwt_signature(token)
+
+    def test_unknown_kid_raises(self):
+        from camara_audit.core.jwt_verify import JWTVerificationError, verify_jwt_signature
+
+        private_key = _generate_rsa_keypair()
+        server = start_mock_oidc_issuer(jwks_document={"keys": [_jwk_dict(private_key, "key-a")]})
+        try:
+            token = _sign_token(private_key, "key-b", {
+                "sub": "opaque-id", "iss": server.base_url, "exp": int(time.time()) + 3600,
+            })
+            with pytest.raises(JWTVerificationError, match="kid"):
+                verify_jwt_signature(token, tls_verify=False)
+        finally:
+            server.stop()
+
+
+class TestJWTSignatureVerificationFindings:
+    def test_verified_token_produces_info_finding(self):
+        from camara_audit.analyzers.jwt_signature import verify_jwt_signature_findings
+
+        private_key = _generate_rsa_keypair()
+        server = start_mock_oidc_issuer(jwks_document={"keys": [_jwk_dict(private_key, "k1")]})
+        try:
+            token = _sign_token(private_key, "k1", {
+                "sub": "opaque-id", "iss": server.base_url, "exp": int(time.time()) + 3600,
+            })
+            findings = verify_jwt_signature_findings(token, tls_verify=False)
+            assert len(findings) == 1
+            assert findings[0].severity.value == "INFO"
+            assert "valid" in findings[0].title.lower()
+        finally:
+            server.stop()
+
+    def test_bad_signature_produces_medium_finding(self):
+        from camara_audit.analyzers.jwt_signature import verify_jwt_signature_findings
+
+        signing_key = _generate_rsa_keypair()
+        published_key = _generate_rsa_keypair()
+        server = start_mock_oidc_issuer(jwks_document={"keys": [_jwk_dict(published_key, "k1")]})
+        try:
+            token = _sign_token(signing_key, "k1", {
+                "sub": "opaque-id", "iss": server.base_url, "exp": int(time.time()) + 3600,
+            })
+            findings = verify_jwt_signature_findings(token, tls_verify=False)
+            assert len(findings) == 1
+            assert findings[0].severity.value == "MEDIUM"
+        finally:
+            server.stop()
+
+    def test_verification_error_produces_info_finding_not_crash(self):
+        from camara_audit.analyzers.jwt_signature import verify_jwt_signature_findings
+
+        findings = verify_jwt_signature_findings(
+            "not-a-jwt-at-all", jwks_url="http://127.0.0.1:1/jwks.json",
+        )
+        assert len(findings) == 1
         assert findings[0].severity.value == "INFO"
 
 
